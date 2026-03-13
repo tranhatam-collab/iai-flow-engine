@@ -1,19 +1,23 @@
-name = 'iai-flow-engine'
-main = "src/worker.ts"
-compatibility_date = "2026-03-13"
-workers_dev = true
+name = "iai-flow-engine"
 
-[assets]
-directory = "./"
-binding = "ASSETS"
+main = "workers/api/src/index.ts"
 
-[observability]
-enabled = true
+compatibility_date = "2025-03-01"
 
-[vars]
-APP_NAME = "IAI Flow"
-APP_ENV = "production"
+workers_dev = false
 
 routes = [
-  { pattern = "flow.iai.one/*", zone_name = "iai.one" }
+  { pattern = "api.flow.iai.one/*", custom_domain = true }
 ]
+
+[vars]
+APP_NAME = "IAI Flow Engine"
+
+[durable_objects]
+bindings = [
+  { name = "EXECUTION_COORDINATOR", class_name = "ExecutionCoordinator" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ExecutionCoordinator"]

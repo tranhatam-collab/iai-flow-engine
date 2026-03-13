@@ -1,13 +1,11 @@
-export async function runsAPI(request: Request) {
+export async function runsAPI(req: Request) {
 
   return new Response(
     JSON.stringify({
-      message: "Runs API placeholder"
+      status: "runs endpoint ready"
     }),
     {
-      headers: {
-        "content-type": "application/json"
-      }
+      headers: { "content-type": "application/json" }
     }
   )
 

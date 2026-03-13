@@ -1,0 +1,15 @@
+name = "flow-iai-one"
+compatibility_date = "2026-03-13"
+
+# deploy static assets
+[assets]
+directory = "./"
+binding = "ASSETS"
+
+# optional
+workers_dev = true
+
+# routes nếu dùng domain
+# routes = [
+#   { pattern = "flow.iai.one/*", zone_name = "iai.one" }
+# ]

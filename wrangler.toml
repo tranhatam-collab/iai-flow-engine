@@ -1,41 +1,19 @@
-name = "iai-flow-engine"
-main = "workers/api/src/index.ts"
+name = "flow-iai-one"
+main = "src/worker.ts"
 compatibility_date = "2026-03-13"
 workers_dev = true
+
+[assets]
+directory = "./"
+binding = "ASSETS"
 
 [observability]
 enabled = true
 
-[[d1_databases]]
-binding = "DB"
-database_name = "iai-flow-db"
-database_id = "3ceac8b1-1c0f-47c3-ad05-2b9da0983c32"
-
-[[kv_namespaces]]
-binding = "CACHE"
-id = "be4a9abb84c545088cf06c1c50e5f0c8"
-preview_id = "42e33082bc3d45508cf5efb260306a87"
-
-[[r2_buckets]]
-binding = "FILES"
-bucket_name = "iai-flow-files"
-
-[durable_objects]
-bindings = [
-  { name = "EXECUTION_COORDINATOR", class_name = "ExecutionCoordinator" }
-]
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["ExecutionCoordinator"]
-
 [vars]
-APP_NAME = "IAI Flow Engine"
-DEFAULT_LANGUAGE = "vi"
-
-[limits]
-cpu_ms = 30000
+APP_NAME = "IAI Flow"
+APP_ENV = "production"
 
 routes = [
-  { pattern = "api.flow.iai.one/*", zone_name = "iai.one" }
+  { pattern = "flow.iai.one/*", zone_name = "iai.one" }
 ]

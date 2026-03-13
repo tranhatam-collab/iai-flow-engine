@@ -1,13 +1,11 @@
-export async function logsAPI(request: Request) {
+export async function logsAPI(req: Request) {
 
   return new Response(
     JSON.stringify({
-      message: "Logs API placeholder"
+      status: "logs endpoint ready"
     }),
     {
-      headers: {
-        "content-type": "application/json"
-      }
+      headers: { "content-type": "application/json" }
     }
   )
 

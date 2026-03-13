@@ -1,13 +1,11 @@
 name = "iai-flow-engine"
-
 main = "workers/api/src/index.ts"
-
 compatibility_date = "2025-03-01"
 
 workers_dev = false
 
 routes = [
-  { pattern = "api.flow.iai.one/*", custom_domain = true }
+  { pattern = "api.flow.iai.one", custom_domain = true }
 ]
 
 [vars]

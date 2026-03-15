@@ -2,11 +2,12 @@ import type { Env } from "./index";
 import { flowsAPI } from "./api/flows-api";
 import { executionsAPI } from "./api/executions-api";
 import { securityAPI } from "./api/security-api";
+import { handleTrigger } from "./flow/trigger-handler";
 
 export async function router(
   request: Request,
   env: Env,
-  _ctx: ExecutionContext
+  ctx: ExecutionContext
 ): Promise<Response> {
   const url = new URL(request.url);
   const pathname = normalizePath(url.pathname);
@@ -17,6 +18,10 @@ export async function router(
       status: 204,
       headers: corsHeaders()
     });
+  }
+
+  if (pathname.startsWith("/api/trigger")) {
+    return handleTrigger(request, env, ctx);
   }
 
   if (method === "GET" && pathname === "/") {
@@ -182,29 +187,4 @@ function applyCors(headers: Headers): void {
     "access-control-allow-headers",
     "content-type, authorization, x-user-id, x-workspace-id, x-internal-api-key"
   );
-}
-
-import { parseAuthHeader, validateSession } from "./security/session"
-import { checkRateLimit, getClientIP } from "./security/rate-limit"
-
-export async function securityGuard(req: Request) {
-
-  const ip = getClientIP(req)
-
-  if (!checkRateLimit(ip)) {
-
-    return new Response(
-      JSON.stringify({ error: "rate limit exceeded" }),
-      { status: 429 }
-    )
-
-  }
-
-  const token = parseAuthHeader(req)
-
-  if (!token) return null
-
-  const session = await validateSession(token)
-
-  return session
 }

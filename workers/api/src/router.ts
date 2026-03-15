@@ -152,7 +152,11 @@ export async function router(
   if (executionsResponse) {
     return executionsResponse;
   }
-
+  
+  const flowRunsDashboardResponse = await flowRunsDashboardAPI(request, env);
+  if (flowRunsDashboardResponse) {
+    return flowRunsDashboardResponse;
+  }
   /* =========================================================
      COORDINATOR ROUTES
   ========================================================= */

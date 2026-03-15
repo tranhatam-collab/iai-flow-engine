@@ -16,12 +16,23 @@ export async function router(
     });
   }
 
-  if (method === "GET" && (pathname === "/" || pathname === "/health")) {
+  if (method === "GET" && pathname === "/") {
     return jsonResponse({
       ok: true,
       service: env.APP_NAME,
       environment: env.ENVIRONMENT,
-      route: pathname,
+      route: "/",
+      message: "IAI Flow Engine is running",
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (method === "GET" && pathname === "/health") {
+    return jsonResponse({
+      ok: true,
+      service: env.APP_NAME,
+      environment: env.ENVIRONMENT,
+      route: "/health",
       timestamp: new Date().toISOString()
     });
   }
@@ -43,23 +54,27 @@ export async function router(
     });
   }
 
-  if (pathname === "/api/coordinator/health" && method === "GET") {
+  if (method === "GET" && pathname === "/api/coordinator") {
+    return proxyToCoordinator(request, env, "/");
+  }
+
+  if (method === "GET" && pathname === "/api/coordinator/health") {
     return proxyToCoordinator(request, env, "/health");
   }
 
-  if (pathname === "/api/coordinator/state" && method === "GET") {
+  if (method === "GET" && pathname === "/api/coordinator/state") {
     return proxyToCoordinator(request, env, "/state");
   }
 
-  if (pathname === "/api/coordinator/claim" && method === "POST") {
+  if (method === "POST" && pathname === "/api/coordinator/claim") {
     return proxyToCoordinator(request, env, "/claim");
   }
 
-  if (pathname === "/api/coordinator/release" && method === "POST") {
+  if (method === "POST" && pathname === "/api/coordinator/release") {
     return proxyToCoordinator(request, env, "/release");
   }
 
-  if (pathname === "/api/coordinator/reset" && method === "POST") {
+  if (method === "POST" && pathname === "/api/coordinator/reset") {
     return proxyToCoordinator(request, env, "/reset");
   }
 
@@ -68,7 +83,8 @@ export async function router(
       ok: false,
       error: "not_found",
       message: "Route not found",
-      route: pathname
+      route: pathname,
+      timestamp: new Date().toISOString()
     },
     { status: 404 }
   );
@@ -144,8 +160,5 @@ function corsHeaders(): Headers {
 function applyCors(headers: Headers): void {
   headers.set("access-control-allow-origin", "*");
   headers.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  headers.set(
-    "access-control-allow-headers",
-    "content-type, authorization, x-internal-api-key"
-  );
+  headers.set("access-control-allow-headers", "content-type, authorization, x-internal-api-key");
 }

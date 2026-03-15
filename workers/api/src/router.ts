@@ -4,6 +4,7 @@ import { securityAPI } from "./api/security-api";
 import { flowsAPI } from "./api/flows-api";
 import { flowRunsDashboardAPI } from "./api/flow-runs-dashboard-api";
 import { flowCollaborationLockAPI } from "./api/flow-collaboration-lock-api";
+import { flowNodeInspectorAPI } from "./api/flow-node-inspector-api";
 import { executionsAPI } from "./api/executions-api";
 
 import { nodeCatalogAPI } from "./api/node-catalog-api";
@@ -160,6 +161,11 @@ export async function router(
   const flowRunsDashboardResponse = await flowRunsDashboardAPI(request, env);
   if (flowRunsDashboardResponse) {
     return flowRunsDashboardResponse;
+  }
+
+    const flowNodeInspectorResponse = await flowNodeInspectorAPI(request, env);
+  if (flowNodeInspectorResponse) {
+    return flowNodeInspectorResponse;
   }
   /* =========================================================
      COORDINATOR ROUTES

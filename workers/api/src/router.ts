@@ -1,6 +1,7 @@
 import type { Env } from "./index";
 import { flowsAPI } from "./api/flows-api";
 import { executionsAPI } from "./api/executions-api";
+import { securityAPI } from "./api/security-api";
 
 export async function router(
   request: Request,
@@ -54,6 +55,11 @@ export async function router(
       },
       timestamp: new Date().toISOString()
     });
+  }
+
+  const securityResponse = await securityAPI(request, env);
+  if (securityResponse) {
+    return securityResponse;
   }
 
   const flowsResponse = await flowsAPI(request, env);
@@ -172,5 +178,8 @@ function corsHeaders(): Headers {
 function applyCors(headers: Headers): void {
   headers.set("access-control-allow-origin", "*");
   headers.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  headers.set("access-control-allow-headers", "content-type, authorization, x-internal-api-key");
+  headers.set(
+    "access-control-allow-headers",
+    "content-type, authorization, x-user-id, x-workspace-id, x-internal-api-key"
+  );
 }

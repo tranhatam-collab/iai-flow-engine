@@ -1,7 +1,7 @@
 /* =========================================================
 IAI FLOW ENGINE
-Flow Import Export API
-Import/export workflow JSON between builder/local/production
+Flow Versions API
+Version history, snapshots, rollback support
 ========================================================= */
 
 import type { Env } from "../index";
@@ -23,7 +23,17 @@ interface FlowRow {
   updated_at: string;
 }
 
-export async function flowImportExportAPI(
+interface FlowVersionRow {
+  id: string;
+  flow_id: string;
+  version: number;
+  snapshot_json: string;
+  status: string;
+  created_by: string;
+  created_at: string;
+}
+
+export async function flowVersionsAPI(
   request: Request,
   env: Env
 ): Promise<Response | null> {
@@ -31,25 +41,136 @@ export async function flowImportExportAPI(
   const pathname = normalizePath(url.pathname);
   const method = request.method.toUpperCase();
 
-  const exportMatch = pathname.match(/^\/api\/flows\/([^/]+)\/export$/);
-  if (exportMatch && method === "GET") {
-    return exportFlow(exportMatch[1], request, env);
+  const versionsMatch = pathname.match(/^\/api\/flows\/([^/]+)\/versions$/);
+  if (versionsMatch && method === "GET") {
+    return listFlowVersions(versionsMatch[1], request, env);
   }
 
-  if (pathname === "/api/flows/import" && method === "POST") {
-    return importFlow(request, env);
+  if (versionsMatch && method === "POST") {
+    return createFlowVersion(versionsMatch[1], request, env);
+  }
+
+  const versionMatch = pathname.match(/^\/api\/flows\/([^/]+)\/versions\/(\d+)$/);
+  if (versionMatch && method === "GET") {
+    return getFlowVersion(versionMatch[1], Number(versionMatch[2]), request, env);
+  }
+
+  const rollbackMatch = pathname.match(/^\/api\/flows\/([^/]+)\/versions\/(\d+)\/restore$/);
+  if (rollbackMatch && method === "POST") {
+    return restoreFlowVersion(
+      rollbackMatch[1],
+      Number(rollbackMatch[2]),
+      request,
+      env
+    );
   }
 
   return null;
 }
 
-async function exportFlow(
+async function listFlowVersions(
   flowId: string,
   request: Request,
   env: Env
 ): Promise<Response> {
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.read");
+
+  await ensureFlowVersionsSchema(env);
+
+  const result = await env.DB.prepare(`
+    SELECT
+      id,
+      flow_id,
+      version,
+      snapshot_json,
+      status,
+      created_by,
+      created_at
+    FROM flow_versions
+    WHERE flow_id = ?
+    ORDER BY version DESC
+  `)
+    .bind(flowId)
+    .all<FlowVersionRow>();
+
+  const items = (result.results || []).map((row) => ({
+    id: row.id,
+    flowId: row.flow_id,
+    version: row.version,
+    snapshot: safeParseJson(row.snapshot_json),
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  }));
+
+  return jsonResponse({
+    ok: true,
+    items
+  });
+}
+
+async function getFlowVersion(
+  flowId: string,
+  version: number,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const identity = await resolveCurrentIdentity(request, env);
+  requirePermission(identity, "flow.read");
+
+  await ensureFlowVersionsSchema(env);
+
+  const row = await env.DB.prepare(`
+    SELECT
+      id,
+      flow_id,
+      version,
+      snapshot_json,
+      status,
+      created_by,
+      created_at
+    FROM flow_versions
+    WHERE flow_id = ? AND version = ?
+    LIMIT 1
+  `)
+    .bind(flowId, version)
+    .first<FlowVersionRow>();
+
+  if (!row) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "flow_version_not_found",
+        message: "Flow version not found"
+      },
+      { status: 404 }
+    );
+  }
+
+  return jsonResponse({
+    ok: true,
+    item: {
+      id: row.id,
+      flowId: row.flow_id,
+      version: row.version,
+      snapshot: safeParseJson(row.snapshot_json),
+      status: row.status,
+      createdBy: row.created_by,
+      createdAt: row.created_at
+    }
+  });
+}
+
+async function createFlowVersion(
+  flowId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const identity = await resolveCurrentIdentity(request, env);
+  requirePermission(identity, "flow.update");
+
+  await ensureFlowVersionsSchema(env);
 
   const flow = await env.DB.prepare(`
     SELECT
@@ -78,55 +199,128 @@ async function exportFlow(
     );
   }
 
-  const exported = {
-    exportVersion: "1.0.0",
-    exportedAt: new Date().toISOString(),
-    flow: {
-      id: flow.id,
-      name: flow.name,
-      status: flow.status,
-      version: flow.version,
-      definition: safeParseJson(flow.definition_json),
-      createdAt: flow.created_at,
-      updatedAt: flow.updated_at
-    }
-  };
+  const snapshot = buildSnapshot(flow);
+  const now = new Date().toISOString();
+
+  await env.DB.prepare(`
+    INSERT INTO flow_versions (
+      id,
+      flow_id,
+      version,
+      snapshot_json,
+      status,
+      created_by,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+    .bind(
+      crypto.randomUUID(),
+      flow.id,
+      flow.version,
+      JSON.stringify(snapshot),
+      flow.status,
+      identity.userId,
+      now
+    )
+    .run();
 
   await writeAuditLog(
     identity,
     {
-      eventType: "flow.exported",
+      eventType: "flow.version_created",
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
-        version: flow.version
+        version: flow.version,
+        status: flow.status
       }
     },
     env
   );
 
-  return jsonResponse({
-    ok: true,
-    item: exported
-  });
+  return jsonResponse(
+    {
+      ok: true,
+      item: {
+        flowId: flow.id,
+        version: flow.version,
+        snapshot,
+        status: flow.status,
+        createdBy: identity.userId,
+        createdAt: now
+      }
+    },
+    { status: 201 }
+  );
 }
 
-async function importFlow(
+async function restoreFlowVersion(
+  flowId: string,
+  version: number,
   request: Request,
   env: Env
 ): Promise<Response> {
   const identity = await resolveCurrentIdentity(request, env);
-  requirePermission(identity, "flow.create");
+  requirePermission(identity, "flow.update");
 
-  const body = await readJson<Record<string, unknown>>(request);
+  await ensureFlowVersionsSchema(env);
 
-  const importedFlow = isRecord(body.flow) ? body.flow : {};
-  const name = sanitizeText(importedFlow.name, "Imported Flow");
-  const status = sanitizeFlowStatus(importedFlow.status);
-  const definition = normalizeDefinition(
-    importedFlow.definition,
-    name
-  );
+  const flow = await env.DB.prepare(`
+    SELECT
+      id,
+      name,
+      status,
+      version,
+      definition_json,
+      created_at,
+      updated_at
+    FROM flows
+    WHERE id = ?
+    LIMIT 1
+  `)
+    .bind(flowId)
+    .first<FlowRow>();
+
+  if (!flow) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "flow_not_found",
+        message: "Flow not found"
+      },
+      { status: 404 }
+    );
+  }
+
+  const versionRow = await env.DB.prepare(`
+    SELECT
+      id,
+      flow_id,
+      version,
+      snapshot_json,
+      status,
+      created_by,
+      created_at
+    FROM flow_versions
+    WHERE flow_id = ? AND version = ?
+    LIMIT 1
+  `)
+    .bind(flowId, version)
+    .first<FlowVersionRow>();
+
+  if (!versionRow) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "flow_version_not_found",
+        message: "Flow version not found"
+      },
+      { status: 404 }
+    );
+  }
+
+  const snapshot = safeParseJson(versionRow.snapshot_json);
+  const definition = normalizeDefinition(snapshot, flow.name, flowId);
 
   const validation = validateWorkflowDefinition(
     definition,
@@ -138,40 +332,60 @@ async function importFlow(
       {
         ok: false,
         error: "workflow_validation_failed",
-        message: "Imported flow JSON is invalid",
+        message: "Stored version cannot be restored because validation failed",
         validation
       },
       { status: 400 }
     );
   }
 
-  const flowId = crypto.randomUUID();
+  const nextVersion = Number(flow.version || 1) + 1;
   const now = new Date().toISOString();
 
-  const storedDefinition = {
-    ...definition,
-    id: flowId,
-    name
-  };
+  await env.DB.prepare(`
+    UPDATE flows
+    SET
+      name = ?,
+      status = ?,
+      version = ?,
+      definition_json = ?,
+      updated_at = ?
+    WHERE id = ?
+  `)
+    .bind(
+      definition.name || flow.name,
+      flow.status,
+      nextVersion,
+      JSON.stringify({
+        ...definition,
+        id: flowId
+      }),
+      now,
+      flowId
+    )
+    .run();
 
   await env.DB.prepare(`
-    INSERT INTO flows (
+    INSERT INTO flow_versions (
       id,
-      name,
-      status,
+      flow_id,
       version,
-      definition_json,
-      created_at,
-      updated_at
+      snapshot_json,
+      status,
+      created_by,
+      created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
+      crypto.randomUUID(),
       flowId,
-      name,
-      status,
-      1,
-      JSON.stringify(storedDefinition),
-      now,
+      nextVersion,
+      JSON.stringify({
+        ...definition,
+        id: flowId
+      }),
+      flow.status,
+      identity.userId,
       now
     )
     .run();
@@ -179,74 +393,78 @@ async function importFlow(
   await writeAuditLog(
     identity,
     {
-      eventType: "flow.imported",
+      eventType: "flow.version_restored",
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
-        name,
-        status
+        restoredFromVersion: version,
+        newVersion: nextVersion
       }
     },
     env
   );
 
-  return jsonResponse(
-    {
-      ok: true,
-      item: {
-        id: flowId,
-        name,
-        status,
-        version: 1,
-        definition: storedDefinition,
-        validation,
-        importedAt: now
-      }
-    },
-    { status: 201 }
-  );
+  return jsonResponse({
+    ok: true,
+    item: {
+      flowId,
+      restoredFromVersion: version,
+      newVersion: nextVersion,
+      updatedAt: now,
+      validation
+    }
+  });
+}
+
+async function ensureFlowVersionsSchema(env: Env): Promise<void> {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS flow_versions (
+      id TEXT PRIMARY KEY,
+      flow_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_flow_versions_flow_id
+    ON flow_versions (flow_id, version DESC)
+  `).run();
+}
+
+function buildSnapshot(flow: FlowRow): Record<string, unknown> {
+  const definition = safeParseJson(flow.definition_json);
+
+  return {
+    id: flow.id,
+    name: flow.name,
+    status: flow.status,
+    version: flow.version,
+    definition,
+    createdAt: flow.created_at,
+    updatedAt: flow.updated_at
+  };
 }
 
 function normalizeDefinition(
   input: unknown,
-  fallbackName: string
+  fallbackName: string,
+  flowId: string
 ): WorkflowValidatorDefinition {
   const base = isRecord(input) ? input : {};
 
+  const definition = isRecord(base.definition) ? base.definition : base;
+
   return {
-    id: typeof base.id === "string" && base.id.trim() ? base.id.trim() : undefined,
-    name: typeof base.name === "string" && base.name.trim() ? base.name.trim() : fallbackName,
-    entry: typeof base.entry === "string" && base.entry.trim() ? base.entry.trim() : null,
-    nodes: Array.isArray(base.nodes) ? base.nodes : [],
-    edges: Array.isArray(base.edges) ? base.edges : []
+    id: typeof definition.id === "string" && definition.id.trim() ? definition.id.trim() : flowId,
+    name: typeof definition.name === "string" && definition.name.trim() ? definition.name.trim() : fallbackName,
+    entry: typeof definition.entry === "string" && definition.entry.trim() ? definition.entry.trim() : null,
+    nodes: Array.isArray(definition.nodes) ? definition.nodes : [],
+    edges: Array.isArray(definition.edges) ? definition.edges : []
   };
-}
-
-function sanitizeText(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function sanitizeFlowStatus(value: unknown): string {
-  const status = typeof value === "string" ? value.trim().toLowerCase() : "";
-
-  if (
-    status === "draft" ||
-    status === "published" ||
-    status === "archived" ||
-    status === "active"
-  ) {
-    return status;
-  }
-
-  return "draft";
-}
-
-async function readJson<T>(request: Request): Promise<T> {
-  const contentType = request.headers.get("content-type") || "";
-  if (!contentType.includes("application/json")) {
-    return {} as T;
-  }
-  return (await request.json()) as T;
 }
 
 function safeParseJson(value: string): unknown {

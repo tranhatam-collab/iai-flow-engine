@@ -2,6 +2,9 @@ import type { Env } from "./index";
 import { flowsAPI } from "./api/flows-api";
 import { executionsAPI } from "./api/executions-api";
 import { securityAPI } from "./api/security-api";
+import { nodeCatalogAPI } from "./api/node-catalog-api";
+import { flowTemplatesAPI } from "./api/flow-templates-api";
+import { flowPublishAPI } from "./api/flow-publish-api";
 import { handleTrigger } from "./flow/trigger-handler";
 
 export async function router(
@@ -65,6 +68,21 @@ export async function router(
   const securityResponse = await securityAPI(request, env);
   if (securityResponse) {
     return securityResponse;
+  }
+
+  const nodeCatalogResponse = await nodeCatalogAPI(request, env);
+  if (nodeCatalogResponse) {
+    return nodeCatalogResponse;
+  }
+
+  const flowTemplatesResponse = await flowTemplatesAPI(request, env);
+  if (flowTemplatesResponse) {
+    return flowTemplatesResponse;
+  }
+
+  const flowPublishResponse = await flowPublishAPI(request, env);
+  if (flowPublishResponse) {
+    return flowPublishResponse;
   }
 
   const flowsResponse = await flowsAPI(request, env);

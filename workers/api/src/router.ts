@@ -1,10 +1,17 @@
 import type { Env } from "./index";
+
+import { securityAPI } from "./api/security-api";
 import { flowsAPI } from "./api/flows-api";
 import { executionsAPI } from "./api/executions-api";
-import { securityAPI } from "./api/security-api";
+
 import { nodeCatalogAPI } from "./api/node-catalog-api";
 import { flowTemplatesAPI } from "./api/flow-templates-api";
 import { flowPublishAPI } from "./api/flow-publish-api";
+import { flowVersionsAPI } from "./api/flow-versions-api";
+import { flowDraftsAPI } from "./api/flow-drafts-api";
+import { flowImportExportAPI } from "./api/flow-import-export-api";
+import { templateInstallAPI } from "./api/template-install-api";
+
 import { handleTrigger } from "./flow/trigger-handler";
 
 export async function router(
@@ -23,9 +30,9 @@ export async function router(
     });
   }
 
-  if (pathname.startsWith("/api/trigger")) {
-    return handleTrigger(request, env, ctx);
-  }
+  /* =========================================================
+     ROOT / HEALTH / STATUS
+  ========================================================= */
 
   if (method === "GET" && pathname === "/") {
     return jsonResponse({
@@ -65,10 +72,26 @@ export async function router(
     });
   }
 
+  /* =========================================================
+     TRIGGER ROUTES
+  ========================================================= */
+
+  if (pathname.startsWith("/api/trigger")) {
+    return handleTrigger(request, env, ctx);
+  }
+
+  /* =========================================================
+     SECURITY
+  ========================================================= */
+
   const securityResponse = await securityAPI(request, env);
   if (securityResponse) {
     return securityResponse;
   }
+
+  /* =========================================================
+     BUILDER / CATALOG / TEMPLATE LAYER
+  ========================================================= */
 
   const nodeCatalogResponse = await nodeCatalogAPI(request, env);
   if (nodeCatalogResponse) {
@@ -80,10 +103,38 @@ export async function router(
     return flowTemplatesResponse;
   }
 
+  const templateInstallResponse = await templateInstallAPI(request, env);
+  if (templateInstallResponse) {
+    return templateInstallResponse;
+  }
+
+  /* =========================================================
+     FLOW LIFECYCLE
+  ========================================================= */
+
   const flowPublishResponse = await flowPublishAPI(request, env);
   if (flowPublishResponse) {
     return flowPublishResponse;
   }
+
+  const flowVersionsResponse = await flowVersionsAPI(request, env);
+  if (flowVersionsResponse) {
+    return flowVersionsResponse;
+  }
+
+  const flowDraftsResponse = await flowDraftsAPI(request, env);
+  if (flowDraftsResponse) {
+    return flowDraftsResponse;
+  }
+
+  const flowImportExportResponse = await flowImportExportAPI(request, env);
+  if (flowImportExportResponse) {
+    return flowImportExportResponse;
+  }
+
+  /* =========================================================
+     CORE FLOW / EXECUTION APIS
+  ========================================================= */
 
   const flowsResponse = await flowsAPI(request, env);
   if (flowsResponse) {
@@ -94,6 +145,10 @@ export async function router(
   if (executionsResponse) {
     return executionsResponse;
   }
+
+  /* =========================================================
+     COORDINATOR ROUTES
+  ========================================================= */
 
   if (method === "GET" && pathname === "/api/coordinator") {
     return proxyToCoordinator(request, env, "/");
@@ -118,6 +173,10 @@ export async function router(
   if (method === "POST" && pathname === "/api/coordinator/reset") {
     return proxyToCoordinator(request, env, "/reset");
   }
+
+  /* =========================================================
+     NOT FOUND
+  ========================================================= */
 
   return jsonResponse(
     {
@@ -146,7 +205,10 @@ async function proxyToCoordinator(
   const forwardedRequest = new Request(targetUrl.toString(), {
     method: request.method,
     headers: request.headers,
-    body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
+    body:
+      request.method === "GET" || request.method === "HEAD"
+        ? null
+        : request.body,
     redirect: "follow"
   });
 

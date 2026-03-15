@@ -1,20 +1,19 @@
 name = "iai-flow-engine"
-main = "workers/api/src/index.ts"
+main = "src/worker.ts"
 compatibility_date = "2025-03-01"
-workers_dev = false
 
-routes = [
-  { pattern = "api.flow.iai.one", custom_domain = true }
+kv_namespaces = [
+  { binding = "SESSIONS_KV", id = "0dddd213069d44d4a27cc53bbc020eec", preview_id = "a0b7bb9793dd4a489c5c07936aa0f621" },
+  { binding = "RATE_LIMITS_KV", id = "f4d7c1bcfb3d4c8e8df226cae7681492", preview_id = "0cf4c7cdc9ee4c0ea01e7710b1783e75" },
+  { binding = "CACHE_KV", id = "1abd687eedb84a308546b96a4d44c527", preview_id = "d204bf954d51479b955c26e9ecd6c0da" }
 ]
 
-[vars]
-APP_NAME = "IAI Flow Engine"
+[[d1_databases]]
+binding = "DB"
+database_name = "iai-flow-core-prod"
+database_id = "912d7b4d-7ce5-4ab7-bc4e-056faab71a22"
 
-[durable_objects]
-bindings = [
-  { name = "EXECUTION_COORDINATOR", class_name = "ExecutionCoordinator" }
-]
-
-[[migrations]]
-tag = "v1"
-new_classes = ["ExecutionCoordinator"]
+[[d1_databases]]
+binding = "DB_PREVIEW"
+database_name = "iai-flow-core-preview"
+database_id = "f48947b8-b917-42be-8632-1edab48b7172"

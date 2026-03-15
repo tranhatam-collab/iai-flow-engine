@@ -66,7 +66,10 @@ function jsonHeaders(): Headers {
   headers.set("content-type", "application/json; charset=utf-8");
   headers.set("access-control-allow-origin", "*");
   headers.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  headers.set("access-control-allow-headers", "content-type, authorization, x-internal-api-key");
+  headers.set(
+    "access-control-allow-headers",
+    "content-type, authorization, x-user-id, x-workspace-id, x-internal-api-key"
+  );
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "strict-origin-when-cross-origin");
   return headers;
@@ -76,6 +79,9 @@ function corsHeaders(): Headers {
   const headers = new Headers();
   headers.set("access-control-allow-origin", "*");
   headers.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  headers.set("access-control-allow-headers", "content-type, authorization, x-internal-api-key");
+  headers.set(
+    "access-control-allow-headers",
+    "content-type, authorization, x-user-id, x-workspace-id, x-internal-api-key"
+  );
   return headers;
 }

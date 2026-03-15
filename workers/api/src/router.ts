@@ -1,4 +1,6 @@
 import type { Env } from "./index";
+import { flowsAPI } from "./api/flows-api";
+import { executionsAPI } from "./api/executions-api";
 
 export async function router(
   request: Request,
@@ -52,6 +54,16 @@ export async function router(
       },
       timestamp: new Date().toISOString()
     });
+  }
+
+  const flowsResponse = await flowsAPI(request, env);
+  if (flowsResponse) {
+    return flowsResponse;
+  }
+
+  const executionsResponse = await executionsAPI(request, env);
+  if (executionsResponse) {
+    return executionsResponse;
   }
 
   if (method === "GET" && pathname === "/api/coordinator") {

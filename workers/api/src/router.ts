@@ -3,6 +3,7 @@ import type { Env } from "./index";
 import { securityAPI } from "./api/security-api";
 import { flowsAPI } from "./api/flows-api";
 import { flowRunsDashboardAPI } from "./api/flow-runs-dashboard-api";
+import { flowCollaborationLockAPI } from "./api/flow-collaboration-lock-api";
 import { executionsAPI } from "./api/executions-api";
 
 import { nodeCatalogAPI } from "./api/node-catalog-api";
@@ -114,7 +115,10 @@ export async function router(
   if (flowBuilderResponse) {
     return flowBuilderResponse;
   }
-
+  const flowCollaborationLockResponse = await flowCollaborationLockAPI(request, env);
+  if (flowCollaborationLockResponse) {
+    return flowCollaborationLockResponse;
+  }
   /* =========================================================
      FLOW LIFECYCLE
   ========================================================= */

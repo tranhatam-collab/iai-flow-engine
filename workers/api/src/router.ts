@@ -2,6 +2,7 @@ import type { Env } from "./index";
 
 import { securityAPI } from "./api/security-api";
 import { flowsAPI } from "./api/flows-api";
+import { flowRunsDashboardAPI } from "./api/flow-runs-dashboard-api";
 import { executionsAPI } from "./api/executions-api";
 
 import { nodeCatalogAPI } from "./api/node-catalog-api";

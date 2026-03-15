@@ -183,3 +183,28 @@ function applyCors(headers: Headers): void {
     "content-type, authorization, x-user-id, x-workspace-id, x-internal-api-key"
   );
 }
+
+import { parseAuthHeader, validateSession } from "./security/session"
+import { checkRateLimit, getClientIP } from "./security/rate-limit"
+
+export async function securityGuard(req: Request) {
+
+  const ip = getClientIP(req)
+
+  if (!checkRateLimit(ip)) {
+
+    return new Response(
+      JSON.stringify({ error: "rate limit exceeded" }),
+      { status: 429 }
+    )
+
+  }
+
+  const token = parseAuthHeader(req)
+
+  if (!token) return null
+
+  const session = await validateSession(token)
+
+  return session
+}

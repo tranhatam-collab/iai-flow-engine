@@ -11,6 +11,7 @@ import { flowVersionsAPI } from "./api/flow-versions-api";
 import { flowDraftsAPI } from "./api/flow-drafts-api";
 import { flowImportExportAPI } from "./api/flow-import-export-api";
 import { templateInstallAPI } from "./api/template-install-api";
+import { flowBuilderAPI } from "./api/flow-builder-api";
 
 import { handleTrigger } from "./flow/trigger-handler";
 
@@ -106,6 +107,11 @@ export async function router(
   const templateInstallResponse = await templateInstallAPI(request, env);
   if (templateInstallResponse) {
     return templateInstallResponse;
+  }
+
+  const flowBuilderResponse = await flowBuilderAPI(request, env);
+  if (flowBuilderResponse) {
+    return flowBuilderResponse;
   }
 
   /* =========================================================

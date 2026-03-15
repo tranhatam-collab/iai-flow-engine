@@ -1,37 +1,151 @@
-import { json } from "./utils/json-response"
+import type { Env } from "./index";
 
-import { runtimeAPI } from "./api/runtime-api"
-import { workflowAPI } from "./api/workflows-api"
-import { runsAPI } from "./api/runs-api"
-import { logsAPI } from "./api/logs-api"
+export async function router(
+  request: Request,
+  env: Env,
+  _ctx: ExecutionContext
+): Promise<Response> {
+  const url = new URL(request.url);
+  const pathname = normalizePath(url.pathname);
+  const method = request.method.toUpperCase();
 
-export async function router(req: Request, env: Env, ctx: ExecutionContext) {
-
-  const url = new URL(req.url)
-
-  if (url.pathname === "/") {
-    return json({
-      service: "IAI Flow Engine",
-      status: "running"
-    })
+  if (method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders()
+    });
   }
 
-  if (url.pathname.startsWith("/api/runtime")) {
-    return runtimeAPI(req, env)
+  if (method === "GET" && (pathname === "/" || pathname === "/health")) {
+    return jsonResponse({
+      ok: true,
+      service: env.APP_NAME,
+      environment: env.ENVIRONMENT,
+      route: pathname,
+      timestamp: new Date().toISOString()
+    });
   }
 
-  if (url.pathname.startsWith("/api/workflows")) {
-    return workflowAPI(req, env)
+  if (method === "GET" && pathname === "/api/status") {
+    return jsonResponse({
+      ok: true,
+      service: env.APP_NAME,
+      environment: env.ENVIRONMENT,
+      runtime: "cloudflare-workers",
+      bindings: {
+        d1: !!env.DB,
+        sessionsKv: !!env.SESSIONS_KV,
+        rateLimitsKv: !!env.RATE_LIMITS_KV,
+        cacheKv: !!env.CACHE_KV,
+        executionCoordinator: !!env.EXECUTION_COORDINATOR
+      },
+      timestamp: new Date().toISOString()
+    });
   }
 
-  if (url.pathname.startsWith("/api/runs")) {
-    return runsAPI(req, env)
+  if (pathname === "/api/coordinator/health" && method === "GET") {
+    return proxyToCoordinator(request, env, "/health");
   }
 
-  if (url.pathname.startsWith("/api/logs")) {
-    return logsAPI(req, env)
+  if (pathname === "/api/coordinator/state" && method === "GET") {
+    return proxyToCoordinator(request, env, "/state");
   }
 
-  return json({ error: "not_found" }, 404)
+  if (pathname === "/api/coordinator/claim" && method === "POST") {
+    return proxyToCoordinator(request, env, "/claim");
+  }
 
+  if (pathname === "/api/coordinator/release" && method === "POST") {
+    return proxyToCoordinator(request, env, "/release");
+  }
+
+  if (pathname === "/api/coordinator/reset" && method === "POST") {
+    return proxyToCoordinator(request, env, "/reset");
+  }
+
+  return jsonResponse(
+    {
+      ok: false,
+      error: "not_found",
+      message: "Route not found",
+      route: pathname
+    },
+    { status: 404 }
+  );
+}
+
+async function proxyToCoordinator(
+  request: Request,
+  env: Env,
+  coordinatorPath: string
+): Promise<Response> {
+  const objectId = env.EXECUTION_COORDINATOR.idFromName("global");
+  const stub = env.EXECUTION_COORDINATOR.get(objectId);
+
+  const incomingUrl = new URL(request.url);
+  const targetUrl = new URL(incomingUrl.origin);
+  targetUrl.pathname = coordinatorPath;
+
+  const forwardedRequest = new Request(targetUrl.toString(), {
+    method: request.method,
+    headers: request.headers,
+    body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
+    redirect: "follow"
+  });
+
+  const response = await stub.fetch(forwardedRequest);
+  return withJsonCors(response);
+}
+
+function normalizePath(pathname: string): string {
+  if (!pathname || pathname === "") return "/";
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    return pathname.slice(0, -1);
+  }
+  return pathname;
+}
+
+function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
+  const headers = new Headers(init.headers);
+  headers.set("content-type", "application/json; charset=utf-8");
+  applyCors(headers);
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "strict-origin-when-cross-origin");
+
+  return new Response(JSON.stringify(data, null, 2), {
+    ...init,
+    headers
+  });
+}
+
+function withJsonCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  applyCors(headers);
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "strict-origin-when-cross-origin");
+
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json; charset=utf-8");
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function corsHeaders(): Headers {
+  const headers = new Headers();
+  applyCors(headers);
+  return headers;
+}
+
+function applyCors(headers: Headers): void {
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  headers.set(
+    "access-control-allow-headers",
+    "content-type, authorization, x-internal-api-key"
+  );
 }

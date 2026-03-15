@@ -1,7 +1,7 @@
 /* =========================================================
 IAI FLOW ENGINE
 Flow Drafts API
-Builder save draft / load draft / delete draft
+Workspace scoped builder drafts
 ========================================================= */
 
 import type { Env } from "../index";
@@ -12,17 +12,10 @@ import {
   validateWorkflowDefinition,
   type WorkflowValidatorDefinition
 } from "../flow/workflow-validator";
-
-interface FlowDraftRow {
-  id: string;
-  flow_id: string | null;
-  name: string;
-  draft_json: string;
-  validation_json: string | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
+import {
+  ensureWorkspaceFlowSchema,
+  getScopedFlow
+} from "../flow/workspace-flow-scope";
 
 export async function flowDraftsAPI(
   request: Request,
@@ -32,130 +25,125 @@ export async function flowDraftsAPI(
   const pathname = normalizePath(url.pathname);
   const method = request.method.toUpperCase();
 
-  if (pathname === "/api/flow-drafts" && method === "GET") {
-    return listDrafts(request, env);
+  const draftsMatch = pathname.match(/^\/api\/flows\/([^/]+)\/drafts$/);
+
+  if (draftsMatch && method === "GET") {
+    return listDrafts(draftsMatch[1], request, env);
   }
 
-  if (pathname === "/api/flow-drafts" && method === "POST") {
-    return createDraft(request, env);
+  if (draftsMatch && method === "POST") {
+    return saveDraft(draftsMatch[1], request, env);
   }
 
-  const match = pathname.match(/^\/api\/flow-drafts\/([^/]+)$/);
-  if (match && method === "GET") {
-    return getDraft(match[1], request, env);
+  const draftMatch = pathname.match(/^\/api\/flows\/([^/]+)\/drafts\/([^/]+)$/);
+
+  if (draftMatch && method === "GET") {
+    return getDraft(draftMatch[1], draftMatch[2], request, env);
   }
 
-  if (match && method === "PUT") {
-    return updateDraft(match[1], request, env);
+  if (draftMatch && method === "DELETE") {
+    return deleteDraft(draftMatch[1], draftMatch[2], request, env);
   }
 
-  if (match && method === "DELETE") {
-    return deleteDraft(match[1], request, env);
+  const restoreMatch = pathname.match(
+    /^\/api\/flows\/([^/]+)\/drafts\/([^/]+)\/restore$/
+  );
+
+  if (restoreMatch && method === "POST") {
+    return restoreDraft(
+      restoreMatch[1],
+      restoreMatch[2],
+      request,
+      env
+    );
   }
 
   return null;
 }
 
+/* =========================================================
+LIST DRAFTS
+========================================================= */
+
 async function listDrafts(
+  flowId: string,
   request: Request,
   env: Env
 ): Promise<Response> {
-  const identity = await resolveCurrentIdentity(request, env);
-  requirePermission(identity, "flow.update");
 
-  await ensureDraftsSchema(env);
+  const identity = await resolveCurrentIdentity(request, env);
+  requirePermission(identity, "flow.read");
+
+  await ensureDraftSchema(env);
+  await ensureWorkspaceFlowSchema(env);
+
+  const flow = await getScopedFlow(flowId, identity.workspaceId, env);
+
+  if (!flow) {
+    return error("flow_not_found", 404);
+  }
 
   const result = await env.DB.prepare(`
-    SELECT
-      id,
-      flow_id,
-      name,
-      draft_json,
-      validation_json,
-      created_by,
-      created_at,
-      updated_at
+    SELECT *
     FROM flow_drafts
-    WHERE created_by = ?
+    WHERE flow_id = ? AND workspace_id = ?
     ORDER BY updated_at DESC
   `)
-    .bind(identity.userId)
-    .all<FlowDraftRow>();
+    .bind(flowId, identity.workspaceId)
+    .all<any>();
 
   const items = (result.results || []).map((row) => ({
     id: row.id,
     flowId: row.flow_id,
+    workspaceId: row.workspace_id,
     name: row.name,
-    draft: safeParseJson(row.draft_json),
-    validation: row.validation_json ? safeParseJson(row.validation_json) : null,
+    definition: safeParse(row.definition_json),
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }));
 
-  return jsonResponse({
+  return json({
     ok: true,
     items
   });
 }
 
+/* =========================================================
+GET DRAFT
+========================================================= */
+
 async function getDraft(
+  flowId: string,
   draftId: string,
   request: Request,
   env: Env
 ): Promise<Response> {
-  const identity = await resolveCurrentIdentity(request, env);
-  requirePermission(identity, "flow.update");
 
-  await ensureDraftsSchema(env);
+  const identity = await resolveCurrentIdentity(request, env);
+  requirePermission(identity, "flow.read");
 
   const row = await env.DB.prepare(`
-    SELECT
-      id,
-      flow_id,
-      name,
-      draft_json,
-      validation_json,
-      created_by,
-      created_at,
-      updated_at
+    SELECT *
     FROM flow_drafts
-    WHERE id = ?
+    WHERE id = ? AND flow_id = ? AND workspace_id = ?
     LIMIT 1
   `)
-    .bind(draftId)
-    .first<FlowDraftRow>();
+    .bind(draftId, flowId, identity.workspaceId)
+    .first<any>();
 
   if (!row) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "draft_not_found",
-        message: "Flow draft not found"
-      },
-      { status: 404 }
-    );
+    return error("draft_not_found", 404);
   }
 
-  if (row.created_by !== identity.userId) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "draft_forbidden",
-        message: "Draft does not belong to current user"
-      },
-      { status: 403 }
-    );
-  }
-
-  return jsonResponse({
+  return json({
     ok: true,
     item: {
       id: row.id,
       flowId: row.flow_id,
+      workspaceId: row.workspace_id,
       name: row.name,
-      draft: safeParseJson(row.draft_json),
-      validation: row.validation_json ? safeParseJson(row.validation_json) : null,
+      definition: safeParse(row.definition_json),
       createdBy: row.created_by,
       createdAt: row.created_at,
       updatedAt: row.updated_at
@@ -163,33 +151,49 @@ async function getDraft(
   });
 }
 
-async function createDraft(
+/* =========================================================
+SAVE DRAFT
+========================================================= */
+
+async function saveDraft(
+  flowId: string,
   request: Request,
   env: Env
 ): Promise<Response> {
+
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.update");
 
-  await ensureDraftsSchema(env);
+  await ensureDraftSchema(env);
 
-  const body = await readJson<Record<string, unknown>>(request);
-  const name = sanitizeText(body.name, "Untitled Draft");
-  const flowId = typeof body.flowId === "string" && body.flowId.trim()
-    ? body.flowId.trim()
-    : null;
+  const body = await request.json<any>();
 
-  const draft = normalizeDraft(body.draft, name);
-  const validation = validateWorkflowDefinition(draft, identity.role);
-  const now = new Date().toISOString();
+  const name = sanitize(body.name, "Draft");
+  const definition = normalizeDefinition(body.definition, name);
+
+  const validation = validateWorkflowDefinition(
+    definition,
+    identity.role
+  );
+
+  if (!validation.ok) {
+    return json({
+      ok: false,
+      error: "workflow_validation_failed",
+      validation
+    }, 400);
+  }
+
   const draftId = crypto.randomUUID();
+  const now = new Date().toISOString();
 
   await env.DB.prepare(`
     INSERT INTO flow_drafts (
       id,
       flow_id,
+      workspace_id,
       name,
-      draft_json,
-      validation_json,
+      definition_json,
       created_by,
       created_at,
       updated_at
@@ -198,300 +202,196 @@ async function createDraft(
     .bind(
       draftId,
       flowId,
+      identity.workspaceId,
       name,
-      JSON.stringify(draft),
-      JSON.stringify(validation),
+      JSON.stringify(definition),
       identity.userId,
       now,
       now
     )
     .run();
 
-  await writeAuditLog(
-    identity,
-    {
-      eventType: "flow.draft_created",
-      resourceType: "flow_draft",
-      resourceId: draftId,
-      metadata: {
-        flowId,
-        name
-      }
-    },
-    env
-  );
-
-  return jsonResponse(
-    {
-      ok: true,
-      item: {
-        id: draftId,
-        flowId,
-        name,
-        draft,
-        validation,
-        createdBy: identity.userId,
-        createdAt: now,
-        updatedAt: now
-      }
-    },
-    { status: 201 }
-  );
-}
-
-async function updateDraft(
-  draftId: string,
-  request: Request,
-  env: Env
-): Promise<Response> {
-  const identity = await resolveCurrentIdentity(request, env);
-  requirePermission(identity, "flow.update");
-
-  await ensureDraftsSchema(env);
-
-  const existing = await env.DB.prepare(`
-    SELECT
-      id,
-      flow_id,
-      name,
-      draft_json,
-      validation_json,
-      created_by,
-      created_at,
-      updated_at
-    FROM flow_drafts
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(draftId)
-    .first<FlowDraftRow>();
-
-  if (!existing) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "draft_not_found",
-        message: "Flow draft not found"
-      },
-      { status: 404 }
-    );
-  }
-
-  if (existing.created_by !== identity.userId) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "draft_forbidden",
-        message: "Draft does not belong to current user"
-      },
-      { status: 403 }
-    );
-  }
-
-  const body = await readJson<Record<string, unknown>>(request);
-  const name = sanitizeText(body.name, existing.name);
-  const flowId = typeof body.flowId === "string" && body.flowId.trim()
-    ? body.flowId.trim()
-    : existing.flow_id;
-
-  const draft = normalizeDraft(body.draft, name);
-  const validation = validateWorkflowDefinition(draft, identity.role);
-  const now = new Date().toISOString();
-
-  await env.DB.prepare(`
-    UPDATE flow_drafts
-    SET
-      flow_id = ?,
-      name = ?,
-      draft_json = ?,
-      validation_json = ?,
-      updated_at = ?
-    WHERE id = ?
-  `)
-    .bind(
-      flowId,
-      name,
-      JSON.stringify(draft),
-      JSON.stringify(validation),
-      now,
+  await writeAuditLog(identity, {
+    eventType: "flow.draft_saved",
+    resourceType: "flow",
+    resourceId: flowId,
+    metadata: {
+      workspaceId: identity.workspaceId,
       draftId
-    )
-    .run();
+    }
+  }, env);
 
-  await writeAuditLog(
-    identity,
-    {
-      eventType: "flow.draft_updated",
-      resourceType: "flow_draft",
-      resourceId: draftId,
-      metadata: {
-        flowId,
-        name
-      }
-    },
-    env
-  );
-
-  return jsonResponse({
+  return json({
     ok: true,
     item: {
       id: draftId,
       flowId,
+      workspaceId: identity.workspaceId,
       name,
-      draft,
-      validation,
+      definition,
+      createdAt: now,
       updatedAt: now
     }
-  });
+  }, 201);
 }
 
+/* =========================================================
+DELETE DRAFT
+========================================================= */
+
 async function deleteDraft(
+  flowId: string,
   draftId: string,
   request: Request,
   env: Env
 ): Promise<Response> {
+
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.update");
 
-  await ensureDraftsSchema(env);
-
-  const existing = await env.DB.prepare(`
-    SELECT
-      id,
-      created_by
-    FROM flow_drafts
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(draftId)
-    .first<{ id: string; created_by: string }>();
-
-  if (!existing) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "draft_not_found",
-        message: "Flow draft not found"
-      },
-      { status: 404 }
-    );
-  }
-
-  if (existing.created_by !== identity.userId) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "draft_forbidden",
-        message: "Draft does not belong to current user"
-      },
-      { status: 403 }
-    );
-  }
-
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     DELETE FROM flow_drafts
-    WHERE id = ?
+    WHERE id = ? AND flow_id = ? AND workspace_id = ?
   `)
-    .bind(draftId)
+    .bind(draftId, flowId, identity.workspaceId)
     .run();
 
-  await writeAuditLog(
-    identity,
-    {
-      eventType: "flow.draft_deleted",
-      resourceType: "flow_draft",
-      resourceId: draftId,
-      metadata: {}
-    },
-    env
-  );
+  if (!result.success) {
+    return error("delete_failed", 500);
+  }
 
-  return jsonResponse({
+  return json({
     ok: true,
-    deleted: true,
-    id: draftId
+    deleted: true
   });
 }
 
-async function ensureDraftsSchema(env: Env): Promise<void> {
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS flow_drafts (
-      id TEXT PRIMARY KEY,
-      flow_id TEXT,
-      name TEXT NOT NULL,
-      draft_json TEXT NOT NULL,
-      validation_json TEXT,
-      created_by TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `).run();
+/* =========================================================
+RESTORE DRAFT
+========================================================= */
+
+async function restoreDraft(
+  flowId: string,
+  draftId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+
+  const identity = await resolveCurrentIdentity(request, env);
+  requirePermission(identity, "flow.update");
+
+  const draft = await env.DB.prepare(`
+    SELECT *
+    FROM flow_drafts
+    WHERE id = ? AND flow_id = ? AND workspace_id = ?
+  `)
+    .bind(draftId, flowId, identity.workspaceId)
+    .first<any>();
+
+  if (!draft) {
+    return error("draft_not_found", 404);
+  }
+
+  const definition = safeParse(draft.definition_json);
+  const now = new Date().toISOString();
 
   await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_flow_drafts_created_by
-    ON flow_drafts (created_by, updated_at DESC)
-  `).run();
+    UPDATE flows
+    SET
+      definition_json = ?,
+      updated_at = ?
+    WHERE id = ? AND workspace_id = ?
+  `)
+    .bind(
+      JSON.stringify(definition),
+      now,
+      flowId,
+      identity.workspaceId
+    )
+    .run();
+
+  await writeAuditLog(identity, {
+    eventType: "flow.draft_restored",
+    resourceType: "flow",
+    resourceId: flowId,
+    metadata: {
+      draftId,
+      workspaceId: identity.workspaceId
+    }
+  }, env);
+
+  return json({
+    ok: true,
+    restored: true
+  });
 }
 
-function normalizeDraft(
-  input: unknown,
-  fallbackName: string
-): WorkflowValidatorDefinition {
-  const base = isRecord(input) ? input : {};
+/* =========================================================
+SCHEMA
+========================================================= */
+
+async function ensureDraftSchema(env: Env) {
+
+  await env.DB.prepare(`
+  CREATE TABLE IF NOT EXISTS flow_drafts (
+    id TEXT PRIMARY KEY,
+    flow_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    name TEXT,
+    definition_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )
+  `).run();
+
+}
+
+/* =========================================================
+UTIL
+========================================================= */
+
+function normalizeDefinition(input: any, name: string): WorkflowValidatorDefinition {
+
+  const base = typeof input === "object" && input ? input : {};
 
   return {
-    id: typeof base.id === "string" && base.id.trim() ? base.id.trim() : undefined,
-    name: typeof base.name === "string" && base.name.trim() ? base.name.trim() : fallbackName,
-    entry: typeof base.entry === "string" && base.entry.trim() ? base.entry.trim() : null,
+    id: base.id,
+    name: base.name || name,
+    entry: base.entry || null,
     nodes: Array.isArray(base.nodes) ? base.nodes : [],
     edges: Array.isArray(base.edges) ? base.edges : []
   };
 }
 
-function sanitizeText(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+function sanitize(v: any, fallback: string) {
+  if (typeof v === "string" && v.trim()) return v.trim();
+  return fallback;
 }
 
-async function readJson<T>(request: Request): Promise<T> {
-  const contentType = request.headers.get("content-type") || "";
-  if (!contentType.includes("application/json")) {
-    return {} as T;
-  }
-  return (await request.json()) as T;
+function safeParse(v: string) {
+  try { return JSON.parse(v); }
+  catch { return null; }
 }
 
-function safeParseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+function normalizePath(p: string) {
+  if (p.length > 1 && p.endsWith("/")) return p.slice(0,-1);
+  return p;
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function normalizePath(pathname: string): string {
-  if (!pathname || pathname === "") return "/";
-  if (pathname.length > 1 && pathname.endsWith("/")) {
-    return pathname.slice(0, -1);
-  }
-  return pathname;
-}
-
-function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
-  const headers = new Headers(init.headers);
-  headers.set("content-type", "application/json; charset=utf-8");
-  headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  headers.set(
-    "access-control-allow-headers",
-    "content-type, authorization, x-user-id, x-workspace-id, x-internal-api-key"
-  );
-
+function json(data: any, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
-    ...init,
-    headers
+    status,
+    headers:{
+      "content-type":"application/json",
+      "access-control-allow-origin":"*"
+    }
   });
+}
+
+function error(code: string, status: number) {
+  return json({
+    ok:false,
+    error:code
+  }, status);
 }

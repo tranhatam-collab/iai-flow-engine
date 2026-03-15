@@ -1,7 +1,7 @@
 /* =========================================================
 IAI FLOW ENGINE
 Flows API
-Production-grade flow CRUD + validation + runtime execution
+Workspace-scoped production-grade flow CRUD + validation + runtime execution
 ========================================================= */
 
 import type { Env } from "../index";
@@ -13,6 +13,12 @@ import {
   type WorkflowValidatorDefinition
 } from "../flow/workflow-validator";
 import { runFlowEngine, ensureFlowEngineSchema } from "../flow/flow-engine";
+import {
+  ensureWorkspaceFlowSchema,
+  getScopedFlow,
+  listScopedFlows,
+  type ScopedFlowRow
+} from "../flow/workspace-flow-scope";
 
 export async function flowsAPI(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
@@ -52,16 +58,6 @@ export async function flowsAPI(request: Request, env: Env): Promise<Response | n
 TYPES
 ========================================================= */
 
-interface FlowRecord {
-  id: string;
-  name: string;
-  status: string;
-  version: number;
-  definition_json: string;
-  created_at: string;
-  updated_at: string;
-}
-
 interface CreateOrUpdateFlowBody {
   name?: string;
   status?: string;
@@ -76,23 +72,14 @@ async function listFlows(request: Request, env: Env): Promise<Response> {
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.read");
 
-  await ensureFlowsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
-  const result = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    ORDER BY updated_at DESC
-  `).all<FlowRecord>();
+  const rows = await listScopedFlows(identity.workspaceId, env);
 
-  const items = (result.results || []).map((row) => ({
+  const items = rows.map((row) => ({
     id: row.id,
+    workspaceId: row.workspace_id,
+    createdBy: row.created_by,
     name: row.name,
     status: row.status,
     version: row.version,
@@ -115,30 +102,16 @@ async function getFlow(flowId: string, request: Request, env: Env): Promise<Resp
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.read");
 
-  await ensureFlowsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
-  const row = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<FlowRecord>();
+  const row = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!row) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -146,15 +119,7 @@ async function getFlow(flowId: string, request: Request, env: Env): Promise<Resp
 
   return jsonResponse({
     ok: true,
-    item: {
-      id: row.id,
-      name: row.name,
-      status: row.status,
-      version: row.version,
-      definition: safeParseJson(row.definition_json),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }
+    item: mapFlowRow(row)
   });
 }
 
@@ -166,7 +131,7 @@ async function createFlow(request: Request, env: Env): Promise<Response> {
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.create");
 
-  await ensureFlowsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
   const body = await readJson<CreateOrUpdateFlowBody>(request);
 
@@ -203,16 +168,20 @@ async function createFlow(request: Request, env: Env): Promise<Response> {
   await env.DB.prepare(`
     INSERT INTO flows (
       id,
+      workspace_id,
+      created_by,
       name,
       status,
       version,
       definition_json,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       flowId,
+      identity.workspaceId,
+      identity.userId,
       name,
       status,
       1,
@@ -229,6 +198,7 @@ async function createFlow(request: Request, env: Env): Promise<Response> {
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         name,
         status,
         validation
@@ -242,6 +212,8 @@ async function createFlow(request: Request, env: Env): Promise<Response> {
       ok: true,
       item: {
         id: flowId,
+        workspaceId: identity.workspaceId,
+        createdBy: identity.userId,
         name,
         status,
         version: 1,
@@ -263,30 +235,16 @@ async function updateFlow(flowId: string, request: Request, env: Env): Promise<R
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.update");
 
-  await ensureFlowsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
-  const existing = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<FlowRecord>();
+  const existing = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!existing) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -337,7 +295,7 @@ async function updateFlow(flowId: string, request: Request, env: Env): Promise<R
       version = ?,
       definition_json = ?,
       updated_at = ?
-    WHERE id = ?
+    WHERE id = ? AND workspace_id = ?
   `)
     .bind(
       nextName,
@@ -345,7 +303,8 @@ async function updateFlow(flowId: string, request: Request, env: Env): Promise<R
       nextVersion,
       JSON.stringify(storedDefinition),
       now,
-      flowId
+      flowId,
+      identity.workspaceId
     )
     .run();
 
@@ -356,6 +315,7 @@ async function updateFlow(flowId: string, request: Request, env: Env): Promise<R
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         name: nextName,
         status: nextStatus,
         version: nextVersion,
@@ -369,6 +329,8 @@ async function updateFlow(flowId: string, request: Request, env: Env): Promise<R
     ok: true,
     item: {
       id: flowId,
+      workspaceId: identity.workspaceId,
+      createdBy: existing.created_by,
       name: nextName,
       status: nextStatus,
       version: nextVersion,
@@ -387,23 +349,16 @@ async function deleteFlow(flowId: string, request: Request, env: Env): Promise<R
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.delete");
 
-  await ensureFlowsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
-  const existing = await env.DB.prepare(`
-    SELECT id, name, status
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<{ id: string; name: string; status: string }>();
+  const existing = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!existing) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -411,9 +366,9 @@ async function deleteFlow(flowId: string, request: Request, env: Env): Promise<R
 
   const result = await env.DB.prepare(`
     DELETE FROM flows
-    WHERE id = ?
+    WHERE id = ? AND workspace_id = ?
   `)
-    .bind(flowId)
+    .bind(flowId, identity.workspaceId)
     .run();
 
   if (!result.success) {
@@ -434,6 +389,7 @@ async function deleteFlow(flowId: string, request: Request, env: Env): Promise<R
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         name: existing.name,
         status: existing.status
       }
@@ -456,31 +412,17 @@ async function runFlow(flowId: string, request: Request, env: Env): Promise<Resp
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.run");
 
-  await ensureFlowsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
   await ensureFlowEngineSchema(env);
 
-  const existing = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<FlowRecord>();
+  const existing = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!existing) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -529,6 +471,7 @@ async function runFlow(flowId: string, request: Request, env: Env): Promise<Resp
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         executionId: result.executionId || null,
         status: result.status || "unknown",
         success: result.ok === true,
@@ -547,31 +490,22 @@ async function runFlow(flowId: string, request: Request, env: Env): Promise<Resp
 }
 
 /* =========================================================
-SCHEMA
+HELPERS
 ========================================================= */
 
-async function ensureFlowsSchema(env: Env): Promise<void> {
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS flows (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      status TEXT NOT NULL,
-      version INTEGER NOT NULL DEFAULT 1,
-      definition_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `).run();
-
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_flows_updated_at
-    ON flows (updated_at DESC)
-  `).run();
+function mapFlowRow(row: ScopedFlowRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    createdBy: row.created_by,
+    name: row.name,
+    status: row.status,
+    version: row.version,
+    definition: safeParseJson(row.definition_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
-
-/* =========================================================
-NORMALIZATION
-========================================================= */
 
 function normalizeDefinition(
   input: unknown,

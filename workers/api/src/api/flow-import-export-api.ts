@@ -1,7 +1,7 @@
 /* =========================================================
 IAI FLOW ENGINE
 Flow Import Export API
-Import/export workflow JSON between builder/local/production
+Workspace-scoped import/export JSON for builder/local/production
 ========================================================= */
 
 import type { Env } from "../index";
@@ -12,16 +12,11 @@ import {
   validateWorkflowDefinition,
   type WorkflowValidatorDefinition
 } from "../flow/workflow-validator";
-
-interface FlowRow {
-  id: string;
-  name: string;
-  status: string;
-  version: number;
-  definition_json: string;
-  created_at: string;
-  updated_at: string;
-}
+import {
+  ensureWorkspaceFlowSchema,
+  getScopedFlow,
+  type ScopedFlowRow
+} from "../flow/workspace-flow-scope";
 
 export async function flowImportExportAPI(
   request: Request,
@@ -43,6 +38,10 @@ export async function flowImportExportAPI(
   return null;
 }
 
+/* =========================================================
+EXPORT FLOW
+========================================================= */
+
 async function exportFlow(
   flowId: string,
   request: Request,
@@ -51,28 +50,16 @@ async function exportFlow(
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.read");
 
-  const flow = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<FlowRow>();
+  await ensureWorkspaceFlowSchema(env);
+
+  const flow = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!flow) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -81,8 +68,13 @@ async function exportFlow(
   const exported = {
     exportVersion: "1.0.0",
     exportedAt: new Date().toISOString(),
+    workspaceScope: {
+      workspaceId: identity.workspaceId
+    },
     flow: {
       id: flow.id,
+      workspaceId: flow.workspace_id,
+      createdBy: flow.created_by,
       name: flow.name,
       status: flow.status,
       version: flow.version,
@@ -99,6 +91,7 @@ async function exportFlow(
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         version: flow.version
       }
     },
@@ -111,6 +104,10 @@ async function exportFlow(
   });
 }
 
+/* =========================================================
+IMPORT FLOW
+========================================================= */
+
 async function importFlow(
   request: Request,
   env: Env
@@ -118,15 +115,14 @@ async function importFlow(
   const identity = await resolveCurrentIdentity(request, env);
   requirePermission(identity, "flow.create");
 
+  await ensureWorkspaceFlowSchema(env);
+
   const body = await readJson<Record<string, unknown>>(request);
 
   const importedFlow = isRecord(body.flow) ? body.flow : {};
   const name = sanitizeText(importedFlow.name, "Imported Flow");
   const status = sanitizeFlowStatus(importedFlow.status);
-  const definition = normalizeDefinition(
-    importedFlow.definition,
-    name
-  );
+  const definition = normalizeDefinition(importedFlow.definition, name);
 
   const validation = validateWorkflowDefinition(
     definition,
@@ -157,16 +153,20 @@ async function importFlow(
   await env.DB.prepare(`
     INSERT INTO flows (
       id,
+      workspace_id,
+      created_by,
       name,
       status,
       version,
       definition_json,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       flowId,
+      identity.workspaceId,
+      identity.userId,
       name,
       status,
       1,
@@ -183,6 +183,7 @@ async function importFlow(
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         name,
         status
       }
@@ -195,6 +196,8 @@ async function importFlow(
       ok: true,
       item: {
         id: flowId,
+        workspaceId: identity.workspaceId,
+        createdBy: identity.userId,
         name,
         status,
         version: 1,
@@ -206,6 +209,10 @@ async function importFlow(
     { status: 201 }
   );
 }
+
+/* =========================================================
+HELPERS
+========================================================= */
 
 function normalizeDefinition(
   input: unknown,
@@ -268,6 +275,10 @@ function normalizePath(pathname: string): string {
   }
   return pathname;
 }
+
+/* =========================================================
+RESPONSE
+========================================================= */
 
 function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);

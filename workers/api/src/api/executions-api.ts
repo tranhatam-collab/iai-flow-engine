@@ -74,7 +74,23 @@ async function getExecution(
     );
   }
 
-  if (item.workspaceId !== identity.workspaceId) {
+  const executionWorkspaceId =
+    isRecord(item.log) && typeof item.log.workspaceId === "string"
+      ? item.log.workspaceId
+      : null;
+
+  if (!executionWorkspaceId) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "execution_workspace_missing",
+        message: "Execution workspace metadata is missing"
+      },
+      { status: 500 }
+    );
+  }
+
+  if (executionWorkspaceId !== identity.workspaceId) {
     return jsonResponse(
       {
         ok: false,
@@ -101,6 +117,10 @@ function normalizePath(pathname: string): string {
     return pathname.slice(0, -1);
   }
   return pathname;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function jsonResponse(data: unknown, init: ResponseInit = {}): Response {

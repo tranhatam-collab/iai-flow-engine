@@ -1,7 +1,7 @@
 /* =========================================================
 IAI FLOW ENGINE
 Flow Versions API
-Version history, snapshots, rollback support
+Workspace-scoped version history, snapshots, rollback support
 ========================================================= */
 
 import type { Env } from "../index";
@@ -12,20 +12,16 @@ import {
   validateWorkflowDefinition,
   type WorkflowValidatorDefinition
 } from "../flow/workflow-validator";
-
-interface FlowRow {
-  id: string;
-  name: string;
-  status: string;
-  version: number;
-  definition_json: string;
-  created_at: string;
-  updated_at: string;
-}
+import {
+  ensureWorkspaceFlowSchema,
+  getScopedFlow,
+  type ScopedFlowRow
+} from "../flow/workspace-flow-scope";
 
 interface FlowVersionRow {
   id: string;
   flow_id: string;
+  workspace_id: string;
   version: number;
   snapshot_json: string;
   status: string;
@@ -68,6 +64,10 @@ export async function flowVersionsAPI(
   return null;
 }
 
+/* =========================================================
+LIST FLOW VERSIONS
+========================================================= */
+
 async function listFlowVersions(
   flowId: string,
   request: Request,
@@ -77,26 +77,42 @@ async function listFlowVersions(
   requirePermission(identity, "flow.read");
 
   await ensureFlowVersionsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
+
+  const flow = await getScopedFlow(flowId, identity.workspaceId, env);
+
+  if (!flow) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "flow_not_found",
+        message: "Flow not found in current workspace"
+      },
+      { status: 404 }
+    );
+  }
 
   const result = await env.DB.prepare(`
     SELECT
       id,
       flow_id,
+      workspace_id,
       version,
       snapshot_json,
       status,
       created_by,
       created_at
     FROM flow_versions
-    WHERE flow_id = ?
+    WHERE flow_id = ? AND workspace_id = ?
     ORDER BY version DESC
   `)
-    .bind(flowId)
+    .bind(flowId, identity.workspaceId)
     .all<FlowVersionRow>();
 
   const items = (result.results || []).map((row) => ({
     id: row.id,
     flowId: row.flow_id,
+    workspaceId: row.workspace_id,
     version: row.version,
     snapshot: safeParseJson(row.snapshot_json),
     status: row.status,
@@ -110,6 +126,10 @@ async function listFlowVersions(
   });
 }
 
+/* =========================================================
+GET FLOW VERSION
+========================================================= */
+
 async function getFlowVersion(
   flowId: string,
   version: number,
@@ -120,21 +140,36 @@ async function getFlowVersion(
   requirePermission(identity, "flow.read");
 
   await ensureFlowVersionsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
+
+  const flow = await getScopedFlow(flowId, identity.workspaceId, env);
+
+  if (!flow) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "flow_not_found",
+        message: "Flow not found in current workspace"
+      },
+      { status: 404 }
+    );
+  }
 
   const row = await env.DB.prepare(`
     SELECT
       id,
       flow_id,
+      workspace_id,
       version,
       snapshot_json,
       status,
       created_by,
       created_at
     FROM flow_versions
-    WHERE flow_id = ? AND version = ?
+    WHERE flow_id = ? AND workspace_id = ? AND version = ?
     LIMIT 1
   `)
-    .bind(flowId, version)
+    .bind(flowId, identity.workspaceId, version)
     .first<FlowVersionRow>();
 
   if (!row) {
@@ -142,7 +177,7 @@ async function getFlowVersion(
       {
         ok: false,
         error: "flow_version_not_found",
-        message: "Flow version not found"
+        message: "Flow version not found in current workspace"
       },
       { status: 404 }
     );
@@ -153,6 +188,7 @@ async function getFlowVersion(
     item: {
       id: row.id,
       flowId: row.flow_id,
+      workspaceId: row.workspace_id,
       version: row.version,
       snapshot: safeParseJson(row.snapshot_json),
       status: row.status,
@@ -161,6 +197,10 @@ async function getFlowVersion(
     }
   });
 }
+
+/* =========================================================
+CREATE FLOW VERSION SNAPSHOT
+========================================================= */
 
 async function createFlowVersion(
   flowId: string,
@@ -171,29 +211,16 @@ async function createFlowVersion(
   requirePermission(identity, "flow.update");
 
   await ensureFlowVersionsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
-  const flow = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<FlowRow>();
+  const flow = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!flow) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -206,16 +233,18 @@ async function createFlowVersion(
     INSERT INTO flow_versions (
       id,
       flow_id,
+      workspace_id,
       version,
       snapshot_json,
       status,
       created_by,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       crypto.randomUUID(),
       flow.id,
+      identity.workspaceId,
       flow.version,
       JSON.stringify(snapshot),
       flow.status,
@@ -231,6 +260,7 @@ async function createFlowVersion(
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         version: flow.version,
         status: flow.status
       }
@@ -243,6 +273,7 @@ async function createFlowVersion(
       ok: true,
       item: {
         flowId: flow.id,
+        workspaceId: identity.workspaceId,
         version: flow.version,
         snapshot,
         status: flow.status,
@@ -254,6 +285,10 @@ async function createFlowVersion(
   );
 }
 
+/* =========================================================
+RESTORE FLOW VERSION
+========================================================= */
+
 async function restoreFlowVersion(
   flowId: string,
   version: number,
@@ -264,29 +299,16 @@ async function restoreFlowVersion(
   requirePermission(identity, "flow.update");
 
   await ensureFlowVersionsSchema(env);
+  await ensureWorkspaceFlowSchema(env);
 
-  const flow = await env.DB.prepare(`
-    SELECT
-      id,
-      name,
-      status,
-      version,
-      definition_json,
-      created_at,
-      updated_at
-    FROM flows
-    WHERE id = ?
-    LIMIT 1
-  `)
-    .bind(flowId)
-    .first<FlowRow>();
+  const flow = await getScopedFlow(flowId, identity.workspaceId, env);
 
   if (!flow) {
     return jsonResponse(
       {
         ok: false,
         error: "flow_not_found",
-        message: "Flow not found"
+        message: "Flow not found in current workspace"
       },
       { status: 404 }
     );
@@ -296,16 +318,17 @@ async function restoreFlowVersion(
     SELECT
       id,
       flow_id,
+      workspace_id,
       version,
       snapshot_json,
       status,
       created_by,
       created_at
     FROM flow_versions
-    WHERE flow_id = ? AND version = ?
+    WHERE flow_id = ? AND workspace_id = ? AND version = ?
     LIMIT 1
   `)
-    .bind(flowId, version)
+    .bind(flowId, identity.workspaceId, version)
     .first<FlowVersionRow>();
 
   if (!versionRow) {
@@ -313,7 +336,7 @@ async function restoreFlowVersion(
       {
         ok: false,
         error: "flow_version_not_found",
-        message: "Flow version not found"
+        message: "Flow version not found in current workspace"
       },
       { status: 404 }
     );
@@ -342,6 +365,12 @@ async function restoreFlowVersion(
   const nextVersion = Number(flow.version || 1) + 1;
   const now = new Date().toISOString();
 
+  const storedDefinition = {
+    ...definition,
+    id: flowId,
+    name: definition.name || flow.name
+  };
+
   await env.DB.prepare(`
     UPDATE flows
     SET
@@ -350,18 +379,16 @@ async function restoreFlowVersion(
       version = ?,
       definition_json = ?,
       updated_at = ?
-    WHERE id = ?
+    WHERE id = ? AND workspace_id = ?
   `)
     .bind(
-      definition.name || flow.name,
+      storedDefinition.name,
       flow.status,
       nextVersion,
-      JSON.stringify({
-        ...definition,
-        id: flowId
-      }),
+      JSON.stringify(storedDefinition),
       now,
-      flowId
+      flowId,
+      identity.workspaceId
     )
     .run();
 
@@ -369,20 +396,22 @@ async function restoreFlowVersion(
     INSERT INTO flow_versions (
       id,
       flow_id,
+      workspace_id,
       version,
       snapshot_json,
       status,
       created_by,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       crypto.randomUUID(),
       flowId,
+      identity.workspaceId,
       nextVersion,
       JSON.stringify({
-        ...definition,
-        id: flowId
+        ...storedDefinition,
+        restoredFromVersion: version
       }),
       flow.status,
       identity.userId,
@@ -397,8 +426,10 @@ async function restoreFlowVersion(
       resourceType: "flow",
       resourceId: flowId,
       metadata: {
+        workspaceId: identity.workspaceId,
         restoredFromVersion: version,
-        newVersion: nextVersion
+        newVersion: nextVersion,
+        validation
       }
     },
     env
@@ -408,6 +439,7 @@ async function restoreFlowVersion(
     ok: true,
     item: {
       flowId,
+      workspaceId: identity.workspaceId,
       restoredFromVersion: version,
       newVersion: nextVersion,
       updatedAt: now,
@@ -416,11 +448,16 @@ async function restoreFlowVersion(
   });
 }
 
+/* =========================================================
+SCHEMA
+========================================================= */
+
 async function ensureFlowVersionsSchema(env: Env): Promise<void> {
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS flow_versions (
       id TEXT PRIMARY KEY,
       flow_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
       version INTEGER NOT NULL,
       snapshot_json TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -430,16 +467,27 @@ async function ensureFlowVersionsSchema(env: Env): Promise<void> {
   `).run();
 
   await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_flow_versions_flow_id
-    ON flow_versions (flow_id, version DESC)
+    CREATE INDEX IF NOT EXISTS idx_flow_versions_workspace_flow
+    ON flow_versions (workspace_id, flow_id, version DESC)
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_flow_versions_workspace_created
+    ON flow_versions (workspace_id, created_at DESC)
   `).run();
 }
 
-function buildSnapshot(flow: FlowRow): Record<string, unknown> {
+/* =========================================================
+HELPERS
+========================================================= */
+
+function buildSnapshot(flow: ScopedFlowRow): Record<string, unknown> {
   const definition = safeParseJson(flow.definition_json);
 
   return {
     id: flow.id,
+    workspaceId: flow.workspace_id,
+    createdBy: flow.created_by,
     name: flow.name,
     status: flow.status,
     version: flow.version,
@@ -455,7 +503,6 @@ function normalizeDefinition(
   flowId: string
 ): WorkflowValidatorDefinition {
   const base = isRecord(input) ? input : {};
-
   const definition = isRecord(base.definition) ? base.definition : base;
 
   return {
@@ -486,6 +533,10 @@ function normalizePath(pathname: string): string {
   }
   return pathname;
 }
+
+/* =========================================================
+RESPONSE
+========================================================= */
 
 function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
